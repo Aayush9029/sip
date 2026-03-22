@@ -1,0 +1,428 @@
+#!/bin/bash
+#***************************************************************************
+#*** sip - summarize stdin using LLMs
+#***************************************************************************
+
+VERSION="0.1.0"
+
+#***** color scheme *****
+GREEN='\033[1;32m'
+RED='\033[1;31m'
+YELLOW='\033[1;33m'
+CYAN='\033[1;36m'
+BLUE='\033[1;34m'
+DIM='\033[2m'
+BOLD='\033[1m'
+RESET='\033[0m'
+
+#***** config *****
+CONFIG_DIR="$HOME/.config/sip"
+CONFIG_FILE="$CONFIG_DIR/config"
+
+#***** set defaults *****
+DEFAULT_MODEL="flash"
+DEFAULT_LEVEL="normal"
+DEFAULT_STYLE="auto"
+
+CONFIG_API_KEY=""
+CONFIG_MODEL=""
+CONFIG_LEVEL=""
+CONFIG_STYLE=""
+
+#***** helper functions *****
+print_header() {
+    echo -e "${CYAN}${BOLD}⚡ sip${RESET}"
+}
+
+print_success() {
+    echo -e "${GREEN}✓${RESET} $1"
+}
+
+print_error() {
+    echo -e "${RED}✗${RESET} $1" >&2
+}
+
+print_status() {
+    echo -e "  ${GREEN}→${RESET} $1"
+}
+
+print_dim() {
+    echo -e "  ${DIM}$1${RESET}"
+}
+
+#***** model lookup (bash 3.2 compatible) *****
+resolve_model_id() {
+    case "$1" in
+        flash)    echo "google/gemini-2.0-flash-001" ;;
+        flash25)  echo "google/gemini-2.5-flash-preview-05-20" ;;
+        deepseek) echo "deepseek/deepseek-chat-v3-0324" ;;
+        qwen72b)  echo "qwen/qwen-2.5-72b-instruct" ;;
+        llama)    echo "meta-llama/llama-3.1-70b-instruct" ;;
+        */*)      echo "$1" ;;
+        *)        return 1 ;;
+    esac
+}
+
+# max input chars per model (~3 chars/token, with overhead buffer)
+resolve_model_limit() {
+    case "$1" in
+        flash|flash25) echo 2000000 ;;
+        llama)         echo 300000 ;;
+        deepseek)      echo 150000 ;;
+        qwen72b)       echo 75000 ;;
+        *)             echo 100000 ;;
+    esac
+}
+
+#***** build system prompt *****
+build_system_prompt() {
+    local style="$1"
+    local level="$2"
+
+    local style_part=""
+    case "$style" in
+        auto)  style_part="Analyze the input and summarize it. Detect the content type (logs, code, prose, data, etc.) and adjust accordingly." ;;
+        logs)  style_part="Summarize these logs. Focus on key events, errors, warnings, and the timeline." ;;
+        code)  style_part="Explain this code. Describe what it does, key components, and how it works." ;;
+        prose) style_part="Summarize this text. Capture the main points, arguments, and conclusions." ;;
+        *)     return 1 ;;
+    esac
+
+    local level_part=""
+    case "$level" in
+        brief)    level_part="Be extremely concise — 1-2 sentences max." ;;
+        normal)   level_part="Provide a clear, concise summary in a short paragraph." ;;
+        detailed) level_part="Provide a comprehensive summary covering all important details." ;;
+        *)        return 1 ;;
+    esac
+
+    echo "${style_part} ${level_part} Output plain text only."
+}
+
+#***** load config *****
+load_config() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        while IFS='=' read -r key value; do
+            [[ -z "$key" || "$key" == \#* ]] && continue
+            case "$key" in
+                api_key) CONFIG_API_KEY="$value" ;;
+                model)   CONFIG_MODEL="$value" ;;
+                level)   CONFIG_LEVEL="$value" ;;
+                style)   CONFIG_STYLE="$value" ;;
+            esac
+        done < "$CONFIG_FILE"
+    fi
+}
+
+#***** setup *****
+run_setup() {
+    echo
+    print_header
+    print_dim "first-time setup"
+    echo
+
+    mkdir -p "$CONFIG_DIR"
+
+    local api_key=""
+    local current_key="${OPENROUTER_API_KEY:-}"
+
+    if [[ -n "$current_key" ]]; then
+        local masked="${current_key:0:10}...${current_key: -4}"
+        echo -e "  ${BOLD}API key:${RESET} ${DIM}detected from \$OPENROUTER_API_KEY (${masked})${RESET}"
+        echo -ne "  Save to config? [Y/n] "
+        read -r save_key
+        if [[ "$save_key" != "n" && "$save_key" != "N" ]]; then
+            api_key="$current_key"
+        else
+            echo -ne "  ${BOLD}API key:${RESET} "
+            read -r api_key
+        fi
+    else
+        echo -e "  Get a key at ${DIM}https://openrouter.ai/keys${RESET}"
+        echo -ne "  ${BOLD}API key:${RESET} "
+        read -r api_key
+    fi
+
+    if [[ -z "$api_key" ]]; then
+        print_error "No API key provided"
+        exit 1
+    fi
+
+    cat > "$CONFIG_FILE" <<EOF
+api_key=${api_key}
+model=${DEFAULT_MODEL}
+level=${DEFAULT_LEVEL}
+style=${DEFAULT_STYLE}
+EOF
+
+    chmod 600 "$CONFIG_FILE"
+
+    echo
+    print_success "Config saved to ${DIM}${CONFIG_FILE}${RESET}"
+    print_dim "Edit $CONFIG_FILE to change defaults"
+    echo
+    exit 0
+}
+
+#***** show help *****
+show_help() {
+    echo
+    print_header
+    echo -e "  ${DIM}summarize stdin using LLMs${RESET}"
+    echo
+    echo -e "${BLUE}USAGE${RESET}"
+    echo -e "    <command> | sip [options]"
+    echo -e "    sip [options] < file.txt"
+    echo
+    echo -e "${BLUE}OPTIONS${RESET}"
+    echo -e "    -h, --help            Show this help"
+    echo -e "    -v, --version         Show version"
+    echo -e "    -l, --level <level>   brief | normal | detailed (default: $DEFAULT_LEVEL)"
+    echo -e "    -s, --style <style>   auto | logs | code | prose (default: $DEFAULT_STYLE)"
+    echo -e "    -m, --model <name>    Model shorthand (default: $DEFAULT_MODEL)"
+    echo -e "    --list-models         List supported models"
+    echo -e "    --setup               Configure API key and defaults"
+    echo
+    echo -e "${BLUE}EXAMPLES${RESET}"
+    echo -e "    ${DIM}cat server.log | sip${RESET}                    ${DIM}# summarize logs${RESET}"
+    echo -e "    ${DIM}nit elonmusk | sip${RESET}                     ${DIM}# summarize nit output${RESET}"
+    echo -e "    ${DIM}cat main.py | sip -s code${RESET}              ${DIM}# explain code${RESET}"
+    echo -e "    ${DIM}git log --oneline -50 | sip -l brief${RESET}   ${DIM}# brief git summary${RESET}"
+    echo -e "    ${DIM}cat essay.md | sip -l detailed${RESET}         ${DIM}# detailed summary${RESET}"
+    echo -e "    ${DIM}curl -s url | sip -s prose${RESET}             ${DIM}# summarize web content${RESET}"
+    echo
+    echo -e "${DIM}Requires OPENROUTER_API_KEY or run 'sip --setup'.${RESET}"
+    echo
+    exit 0
+}
+
+#***** show version *****
+show_version() {
+    echo "sip $VERSION"
+    exit 0
+}
+
+#***** list models *****
+list_models() {
+    echo
+    print_header
+    echo
+    echo -e "${BLUE}SUPPORTED MODELS${RESET}"
+    echo
+    echo -e "    ${BOLD}Shorthand     Model ID                                  Context${RESET}"
+    echo -e "    ${DIM}─────────     ────────────────────────────────────────  ───────${RESET}"
+    echo -e "    flash         google/gemini-2.0-flash-001               1M ${DIM}(default)${RESET}"
+    echo -e "    flash25       google/gemini-2.5-flash-preview-05-20     1M"
+    echo -e "    llama         meta-llama/llama-3.1-70b-instruct         128K"
+    echo -e "    deepseek      deepseek/deepseek-chat-v3-0324            64K"
+    echo -e "    qwen72b       qwen/qwen-2.5-72b-instruct               32K"
+    echo
+    echo -e "    ${DIM}Or pass any OpenRouter model ID: sip -m org/model-name${RESET}"
+    echo
+    exit 0
+}
+
+#***** format size *****
+format_size() {
+    local chars=$1
+    if [[ $chars -gt 1000000 ]]; then
+        echo "$(( chars / 1000000 )).$(( (chars % 1000000) / 100000 ))M chars"
+    elif [[ $chars -gt 1000 ]]; then
+        echo "$(( chars / 1000 ))K chars"
+    else
+        echo "${chars} chars"
+    fi
+}
+
+#***** parse arguments *****
+load_config
+
+model="${CONFIG_MODEL:-$DEFAULT_MODEL}"
+level="${CONFIG_LEVEL:-$DEFAULT_LEVEL}"
+style="${CONFIG_STYLE:-$DEFAULT_STYLE}"
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)    show_help ;;
+        -v|--version) show_version ;;
+        --list-models) list_models ;;
+        --setup)      run_setup ;;
+        -l|--level)
+            if [[ -z "$2" ]]; then
+                print_error "--level requires: brief, normal, or detailed"
+                exit 1
+            fi
+            level="$2"
+            shift 2
+            ;;
+        -s|--style)
+            if [[ -z "$2" ]]; then
+                print_error "--style requires: auto, logs, code, or prose"
+                exit 1
+            fi
+            style="$2"
+            shift 2
+            ;;
+        -m|--model)
+            if [[ -z "$2" ]]; then
+                print_error "--model requires a model name"
+                exit 1
+            fi
+            model="$2"
+            shift 2
+            ;;
+        -*)
+            print_error "Unknown option: $1"
+            echo -e "${DIM}Use 'sip --help' for usage${RESET}" >&2
+            exit 1
+            ;;
+        *)
+            print_error "Unexpected argument: $1 (sip reads from stdin)"
+            echo -e "${DIM}Usage: <command> | sip [options]${RESET}" >&2
+            exit 1
+            ;;
+    esac
+done
+
+#***** validate model *****
+model_id=$(resolve_model_id "$model")
+if [[ $? -ne 0 ]]; then
+    print_error "Unknown model: $model"
+    echo -e "${DIM}Use 'sip --list-models' to see available models${RESET}" >&2
+    exit 1
+fi
+
+#***** validate style and level *****
+system_prompt=$(build_system_prompt "$style" "$level")
+if [[ $? -ne 0 ]]; then
+    print_error "Invalid style '$style' or level '$level'"
+    echo -e "${DIM}Styles: auto, logs, code, prose | Levels: brief, normal, detailed${RESET}" >&2
+    exit 1
+fi
+
+#***** resolve API key *****
+api_key="${OPENROUTER_API_KEY:-${CONFIG_API_KEY:-}}"
+if [[ -z "$api_key" ]]; then
+    print_error "No API key found"
+    echo -e "${DIM}Set \$OPENROUTER_API_KEY or run 'sip --setup'${RESET}" >&2
+    exit 1
+fi
+
+#***** check stdin *****
+if [[ -t 0 ]]; then
+    print_error "No input — sip reads from stdin"
+    echo -e "${DIM}Usage: <command> | sip [options]${RESET}" >&2
+    exit 1
+fi
+
+#***** read stdin *****
+input=$(cat)
+input_len=${#input}
+
+if [[ $input_len -eq 0 ]]; then
+    print_error "Empty input"
+    exit 1
+fi
+
+#***** truncate if needed *****
+max_chars=$(resolve_model_limit "$model")
+truncated=false
+original_len=$input_len
+
+if [[ $input_len -gt $max_chars ]]; then
+    input="${input:0:$max_chars}"
+    input_len=$max_chars
+    truncated=true
+fi
+
+#***** display header (interactive only) *****
+if [[ -t 1 ]]; then
+    echo
+    print_header
+    print_dim "v${VERSION} · https://github.com/Aayush9029/sip"
+    echo
+    print_status "Input: ${BOLD}$(format_size $original_len)${RESET}"
+    if [[ "$truncated" == true ]]; then
+        echo -e "  ${YELLOW}⚠${RESET}  Truncated to $(format_size $max_chars) ${DIM}(model limit)${RESET}"
+    fi
+    print_status "Model: ${BOLD}${model}${RESET} ${DIM}(${model_id})${RESET}"
+    print_status "Style: ${BOLD}${style}${RESET} · Level: ${BOLD}${level}${RESET}"
+    echo
+    echo -ne "  ${YELLOW}⏳${RESET} Thinking..."
+fi
+
+#***** build payload *****
+payload_file=$(mktemp)
+trap "rm -f '$payload_file'" EXIT
+
+python3 -c "
+import json, sys
+
+text = sys.stdin.read()
+payload = {
+    'model': sys.argv[1],
+    'messages': [
+        {'role': 'system', 'content': sys.argv[2]},
+        {'role': 'user', 'content': text}
+    ],
+    'max_tokens': 2048,
+    'provider': {'allow_fallbacks': True}
+}
+print(json.dumps(payload))
+" "$model_id" "$system_prompt" <<< "$input" > "$payload_file"
+
+#***** call OpenRouter API *****
+response=$(curl -s -w "\n%{http_code}" \
+    -X POST "https://openrouter.ai/api/v1/chat/completions" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $api_key" \
+    -d @"$payload_file")
+
+http_code=$(echo "$response" | tail -1)
+body=$(echo "$response" | sed '$d')
+
+rm -f "$payload_file"
+
+#***** clear thinking indicator *****
+if [[ -t 1 ]]; then
+    echo -ne "\r\033[K"
+fi
+
+#***** handle errors *****
+if [[ "$http_code" -ne 200 ]]; then
+    error_msg=$(echo "$body" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    print(data.get('error', {}).get('message', 'Unknown error'))
+except:
+    print('HTTP error $http_code')
+" 2>/dev/null)
+    print_error "API error: $error_msg"
+    exit 1
+fi
+
+#***** parse and display response *****
+summary=$(echo "$body" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    content = data['choices'][0]['message']['content']
+    print(content.strip())
+except Exception as e:
+    print(f'Failed to parse response: {e}', file=sys.stderr)
+    sys.exit(1)
+")
+
+if [[ $? -ne 0 ]]; then
+    print_error "Failed to parse API response"
+    exit 1
+fi
+
+#***** output *****
+if [[ -t 1 ]]; then
+    echo "$summary"
+    echo
+else
+    echo "$summary"
+fi
