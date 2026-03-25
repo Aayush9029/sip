@@ -3,7 +3,7 @@
 #*** sip - summarize stdin using LLMs
 #***************************************************************************
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 
 #***** color scheme *****
 GREEN='\033[1;32m'
@@ -28,6 +28,7 @@ CONFIG_API_KEY=""
 CONFIG_MODEL=""
 CONFIG_LEVEL=""
 CONFIG_STYLE=""
+CUSTOM_PROMPT=""
 
 #***** helper functions *****
 print_header() {
@@ -81,10 +82,9 @@ build_system_prompt() {
 
     local style_part=""
     case "$style" in
-        auto)  style_part="Analyze the input and summarize it. Detect the content type (logs, code, prose, data, etc.) and adjust accordingly." ;;
+        auto)  style_part="Analyze the input and summarize it. Detect the content type (logs, code, data, etc.) and adjust accordingly." ;;
         logs)  style_part="Summarize these logs. Focus on key events, errors, warnings, and the timeline." ;;
         code)  style_part="Explain this code. Describe what it does, key components, and how it works." ;;
-        prose) style_part="Summarize this text. Capture the main points, arguments, and conclusions." ;;
         *)     return 1 ;;
     esac
 
@@ -97,6 +97,11 @@ build_system_prompt() {
     esac
 
     echo "${style_part} ${level_part} Output plain text only."
+}
+
+build_custom_prompt() {
+    local prompt="$1"
+    echo "Answer the following question about the input: ${prompt} Output plain text only."
 }
 
 #***** load config *****
@@ -177,19 +182,20 @@ show_help() {
     echo -e "${BLUE}OPTIONS${RESET}"
     echo -e "    -h, --help            Show this help"
     echo -e "    -v, --version         Show version"
+    echo -e "    -p, --prompt <text>   Ask a specific question about the input"
     echo -e "    -l, --level <level>   brief | normal | detailed (default: $DEFAULT_LEVEL)"
-    echo -e "    -s, --style <style>   auto | logs | code | prose (default: $DEFAULT_STYLE)"
+    echo -e "    -s, --style <style>   auto | logs | code (default: $DEFAULT_STYLE)"
     echo -e "    -m, --model <name>    Model shorthand (default: $DEFAULT_MODEL)"
     echo -e "    --list-models         List supported models"
     echo -e "    --setup               Configure API key and defaults"
     echo
     echo -e "${BLUE}EXAMPLES${RESET}"
-    echo -e "    ${DIM}cat server.log | sip${RESET}                    ${DIM}# summarize logs${RESET}"
-    echo -e "    ${DIM}nit elonmusk | sip${RESET}                     ${DIM}# summarize nit output${RESET}"
-    echo -e "    ${DIM}cat main.py | sip -s code${RESET}              ${DIM}# explain code${RESET}"
-    echo -e "    ${DIM}git log --oneline -50 | sip -l brief${RESET}   ${DIM}# brief git summary${RESET}"
-    echo -e "    ${DIM}cat essay.md | sip -l detailed${RESET}         ${DIM}# detailed summary${RESET}"
-    echo -e "    ${DIM}curl -s url | sip -s prose${RESET}             ${DIM}# summarize web content${RESET}"
+    echo -e "    ${DIM}cat server.log | sip${RESET}                              ${DIM}# summarize logs${RESET}"
+    echo -e "    ${DIM}nit elonmusk | sip${RESET}                               ${DIM}# summarize nit output${RESET}"
+    echo -e "    ${DIM}cat main.py | sip -s code${RESET}                        ${DIM}# explain code${RESET}"
+    echo -e "    ${DIM}git log --oneline -50 | sip -l brief${RESET}             ${DIM}# brief git summary${RESET}"
+    echo -e "    ${DIM}cat report.csv | sip -p 'what are the totals?'${RESET}   ${DIM}# ask a question${RESET}"
+    echo -e "    ${DIM}curl -s url | sip -s logs${RESET}                        ${DIM}# summarize web content${RESET}"
     echo
     echo -e "${DIM}Requires OPENROUTER_API_KEY or run 'sip --setup'.${RESET}"
     echo
@@ -257,10 +263,18 @@ while [[ $# -gt 0 ]]; do
             ;;
         -s|--style)
             if [[ -z "$2" ]]; then
-                print_error "--style requires: auto, logs, code, or prose"
+                print_error "--style requires: auto, logs, or code"
                 exit 1
             fi
             style="$2"
+            shift 2
+            ;;
+        -p|--prompt)
+            if [[ -z "$2" ]]; then
+                print_error "--prompt requires a question"
+                exit 1
+            fi
+            CUSTOM_PROMPT="$2"
             shift 2
             ;;
         -m|--model)
@@ -293,11 +307,15 @@ if [[ $? -ne 0 ]]; then
 fi
 
 #***** validate style and level *****
-system_prompt=$(build_system_prompt "$style" "$level")
-if [[ $? -ne 0 ]]; then
-    print_error "Invalid style '$style' or level '$level'"
-    echo -e "${DIM}Styles: auto, logs, code, prose | Levels: brief, normal, detailed${RESET}" >&2
-    exit 1
+if [[ -n "$CUSTOM_PROMPT" ]]; then
+    system_prompt=$(build_custom_prompt "$CUSTOM_PROMPT")
+else
+    system_prompt=$(build_system_prompt "$style" "$level")
+    if [[ $? -ne 0 ]]; then
+        print_error "Invalid style '$style' or level '$level'"
+        echo -e "${DIM}Styles: auto, logs, code | Levels: brief, normal, detailed${RESET}" >&2
+        exit 1
+    fi
 fi
 
 #***** resolve API key *****
@@ -346,7 +364,11 @@ if [[ -t 1 ]]; then
         echo -e "  ${YELLOW}⚠${RESET}  Truncated to $(format_size $max_chars) ${DIM}(model limit)${RESET}"
     fi
     print_status "Model: ${BOLD}${model}${RESET} ${DIM}(${model_id})${RESET}"
-    print_status "Style: ${BOLD}${style}${RESET} · Level: ${BOLD}${level}${RESET}"
+    if [[ -n "$CUSTOM_PROMPT" ]]; then
+        print_status "Prompt: ${BOLD}${CUSTOM_PROMPT}${RESET}"
+    else
+        print_status "Style: ${BOLD}${style}${RESET} · Level: ${BOLD}${level}${RESET}"
+    fi
     echo
     echo -ne "  ${YELLOW}⏳${RESET} Thinking..."
 fi
