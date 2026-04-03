@@ -4,6 +4,8 @@
 
 Summarize stdin using LLMs.
 
+<p align="center"><img src="assets/demo.gif" alt="sip demo" width="800"></p>
+
 ## Install
 
 ```bash
