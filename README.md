@@ -1,15 +1,29 @@
-<img src="assets/icon.png" width="128" alt="sip">
+<p align="center">
+  <img src="assets/icon.png" width="128" alt="sip">
+  <h1 align="center">sip</h1>
+  <p align="center">Summarize stdin using LLMs</p>
+</p>
 
-# sip
+<p align="center">
+  <a href="https://github.com/Aayush9029/sip/releases/latest"><img src="https://img.shields.io/github/v/release/Aayush9029/sip" alt="Release"></a>
+  <a href="https://github.com/Aayush9029/sip/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Aayush9029/sip" alt="License"></a>
+</p>
 
-Summarize stdin using LLMs.
-
-<p align="center"><img src="assets/demo.gif" alt="sip demo" width="800"></p>
+<p align="center">
+  <img src="assets/demo.gif" alt="sip demo" width="800">
+</p>
 
 ## Install
 
 ```bash
 brew install aayush9029/tap/sip
+```
+
+Or tap first:
+
+```bash
+brew tap aayush9029/tap
+brew install sip
 ```
 
 Requires `OPENROUTER_API_KEY` ([get one](https://openrouter.ai/keys)) or run `sip --setup`.
@@ -39,6 +53,6 @@ sip --list-models                                   # see available models
 
 Piped output is clean text (no colors/formatting).
 
----
+## License
 
-*More CLI tools: [`brew tap aayush9029/tap`](https://github.com/Aayush9029/homebrew-tap)*
+MIT
