@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/demo.gif" alt="sip demo" width="800">
+  <img src="assets/demo.gif" alt="sip demo">
 </p>
 
 ## Install
